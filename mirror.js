@@ -20,6 +20,7 @@ var yargs = require('yargs')
     .count('v')
     .alias('H', 'header')
     .describe('H', 'Add a header to EVERY request to the backend.')
+    .default('H', [])
     .alias('h', 'help')
     .describe('h', 'Print this help message and quit.')
     .boolean('h')
@@ -41,10 +42,89 @@ var yargs = require('yargs')
     })
     , argv = yargs.argv
     , console = require('console')
+    , express = require('express')
+    , app = express()
+    , bodyParser = require('body-parser')
+    , dgram = require('dgram')
     ;
 
 if (argv.help) {
     yargs.showHelp();
     process.exit();
 }
-console.log(argv);
+var onSetFunctions = {
+    port: function(newVal) {
+        argv.p = argv.port = newVal;
+        tcp.close();
+        tcp = app.listen(argv.port);
+        var tmp = newUdp(argv.p);
+        udp.close();
+        udp = tmp;
+        return argv.port;
+    }
+    , backend: function(newVal) {
+        return argv.backend = argv.b = newVal;
+    }
+    , rate: function(newVal) {
+        if (newVal < 0)
+            newVal = 0;
+        if (newVal > 1)
+            newVal = 1;
+        return argv.rate = argv.r = newVal;
+    }
+    , logfile: function(newVal) {
+        return argv.logfile = argv.l = newVal;
+    }
+    , "graphite-server": function(newVal) {
+        return argv.graphite-server = argv.g = newVal;
+    }
+    , "graphite-namespace": function(newVal) {
+        return argv.graphite-namespace = argv.n = newVal;
+    }
+    , verbose: function (newVal) {
+        return argv.verbose = argv.v = newVal;
+    }
+    , header: function (newVal) {
+        argv.header.push(newVal);
+        return argv.header;
+    }
+}
+onSetFunctions.p = onSetFunctions.port;
+onSetFunctions.b = onSetFunctions.backend;
+onSetFunctions.r = onSetFunctions.rate;
+onSetFunctions.l = onSetFunctions.logfile;
+onSetFunctions.g = onSetFunctions['graphite-server'];
+onSetFunctions.n = onSetFunctions['graphite-namespace'];
+onSetFunctions.v = onSetFunctions.verbose;
+onSetFunctions.H = onSetFunctions.header;
+
+app.use(bodyParser.json());
+var router = express.Router();
+router.get('/:var_name', function(req, res) {
+    var response = {};
+    response[req.params.var_name] = argv[req.params.var_name];
+    res.json(response);
+});
+router.get('/', function(req, res) {
+    return res.json(argv);
+});
+router.post('/', function(req, res) {
+    console.log(req.body);
+    var response = {}
+    Object.keys(req.body).forEach(function(key) {
+        response[key] = onSetFunctions[key](req.body[key]);
+    });
+    res.json(response);
+});
+
+app.use('/', router)
+var tcp = app.listen(argv.port);
+function newUdp(port) {
+    var socket = dgram.createSocket('udp4');
+    socket.on('message', function(msg, rinfo) {
+        console.log(msg, ''+ msg, rinfo);
+    });
+    socket.bind(port);
+    return socket;
+}
+var udp = newUdp(argv.port);
