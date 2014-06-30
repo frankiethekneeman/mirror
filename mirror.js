@@ -46,12 +46,26 @@ var yargs = require('yargs')
     , app = express()
     , bodyParser = require('body-parser')
     , dgram = require('dgram')
+    , winston = require('winston')
+    , http = require('http')
     ;
+function addLogger(fname) {
+    winston.add(winston.Transports.File, { 
+        filename: fname
+        , timestamp: true
+        , level: "info"
+    });
+}
 
 if (argv.help) {
     yargs.showHelp();
     process.exit();
 }
+
+if (argv.logfile) {
+    addLogger(argv.logfile);
+}
+
 var onSetFunctions = {
     port: function(newVal) {
         argv.p = argv.port = newVal;
@@ -63,6 +77,7 @@ var onSetFunctions = {
         return argv.port;
     }
     , backend: function(newVal) {
+        if (!newVal) return argv.backend;
         return argv.backend = argv.b = newVal;
     }
     , rate: function(newVal) {
@@ -73,7 +88,15 @@ var onSetFunctions = {
         return argv.rate = argv.r = newVal;
     }
     , logfile: function(newVal) {
-        return argv.logfile = argv.l = newVal;
+        argv.logfile = argv.l = newVal;
+        try {
+            winston.remove(winston.transports.File);
+        } catch (err) {
+            //Do nothing, because it probably means it didn't exist.
+        }
+        if (argv.logfile)
+            addLogger(argv.logfile);
+        return argv.logfile;
     }
     , "graphite-server": function(newVal) {
         return argv.graphite-server = argv.g = newVal;
@@ -109,7 +132,6 @@ router.get('/', function(req, res) {
     return res.json(argv);
 });
 router.post('/', function(req, res) {
-    console.log(req.body);
     var response = {}
     Object.keys(req.body).forEach(function(key) {
         response[key] = onSetFunctions[key](req.body[key]);
@@ -117,12 +139,70 @@ router.post('/', function(req, res) {
     res.json(response);
 });
 
+/**
+ *  Uniquifier I stole from Stack Overflow:
+ *   http://stackoverflow.com/questions/1584370/how-to-merge-two-arrays-in-javascript-and-de-duplicate-items
+ */
+Array.prototype.unique = function() {
+    var a = this.concat();
+    for(var i=0; i<a.length; ++i) {
+        for(var j=i+1; j<a.length; ++j) {
+            if(a[i] === a[j])
+                a.splice(j--, 1);
+        }
+    }
+    return a;
+};
+
+function parseHeaders(incoming) {
+    Object.keys(argv.header).forEach(function(key) {
+        if (!incoming[key]) {
+            incoming[key] = argv.header[key];
+        } else if (typeof incoming[key] == array) {
+            incoming[key] = incoming[key].concat(argv.header[key]).unique();
+        } else {
+            incoming[key] = argv.header[key].concat(incoming[key]).unique();
+        }
+    });
+    return incoming;
+}
+
 app.use('/', router)
 var tcp = app.listen(argv.port);
 function newUdp(port) {
     var socket = dgram.createSocket('udp4');
     socket.on('message', function(msg, rinfo) {
-        console.log(msg, ''+ msg, rinfo);
+        var start = Date.now();
+        var request = undefined;
+        var timeHeaders = null;
+        var timeBody = null;
+        try {
+            request = JSON.parse(msg);
+        } catch (e) {
+            winston.error(e);
+            return;
+        }
+        if (Math.random() > argv.rate) {
+            winston.info("Message Received, not sampling:", request);
+            return;
+        }
+        winston.info("Message Received, sampling:", request);
+        http.request({
+            host: argv.backend
+            , method: request.method
+            , path: request.path
+            , headers: request.headers
+        }, function(resp) {
+            timeHeaders = Date.now() - start;
+            var responseSize = 0;
+            resp.on('data', function(chunk) {
+                responseSize += chunk.length;
+            });
+            resp.on('end', function() {
+                timeBody = Date.now() - start;
+                console.log(responseSize, timeHeaders, timeBody);
+            });
+        }).end();
     });
     socket.bind(port);
     return socket;
